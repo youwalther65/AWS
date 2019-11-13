@@ -5,7 +5,8 @@ instancetype="t3.micro"
 userdat="user-data.txt"
 aminame="AWSLinux2HttpEnabledJUWAMI"
 amidesc="AWS Linux 2 HTTP Enabled JUWi AMI"
-AWS_DEFAULT_REGION=us-west-1
+waitint=15
+AWS_DEFAULT_REGION=eu-west-1
 export AWS_DEFAULT_REGION
 
 echo "Creating VPC with CID $vpccidr"
@@ -73,21 +74,47 @@ instanceid=$(aws ec2 run-instances --image-id $amiid --count 1 --instance-type $
 --subnet-id $subnetid --security-group-ids $secgroupid \
 --user-data file://${userdat} --query 'Instances[].InstanceId' --output text)
 echo "Instance ID: $instanceid"
+echo "Wating for instance $instanceid to become available"
+while [ `aws ec2 describe-instance-status --instance-ids $instanceid --query 'InstanceStatuses[].[SystemStatus.Status,InstanceStatus.Status]' --output json | egrep -c ok` -ne 2 ]
+do
+  printf "."
+  sleep $waitint
+done
 
-echo "Wating 2 min for instance $instanceid to become available"
-sleep 120
 pubip=$(aws ec2 describe-instances --instance-id $instanceid --query 'Reservations[].Instances[].PublicIpAddress' --output text)
 echo "Public IP address: $pubip"
+echo "Wating for Apache web server to become ready"
+until $(curl -vs $pubip > /dev/null 2>&1)
+do
+  printf "."
+  sleep $waitint
+done
+echo ""
 echo "Fetching web page from instance $instanceid"
 curl $pubip
 
 echo "Stopping instance $instanceid to get create clean snapshot and AMI"
 aws ec2 stop-instances --instance-id $instanceid
-sleep 120
+echo "Wating for $instanceid to be \"stopped\""
+while [ `aws ec2 describe-instances --instance-ids $instanceid --query 'Reservations[].Instances[].State.Name' --output text` != "stopped" ]
+do
+  printf "."
+  sleep $waitint
+done
+echo ""
+echo "$instanceid is \"stopped\""
+
 echo "Taking snapshot from stopped instance $instanceid"
-snapid=$(aws ec2 create-image --instance-id $instanceid --name $aminame --description "$amidesc" --query 'ImageId' --output text)
-echo "AMI ID: $snapid"
-sleep 120
-echo "Making AMI §snapid public"
-aws ec2 modify-image-attribute --image-id $snapid --launch-permission "Add=[{Group=all}]"
-aws ec2 describe-images --image-id $snapid
+newamiid=$(aws ec2 create-image --instance-id $instanceid --name $aminame --description "$amidesc" --query 'ImageId' --output text)
+echo "AMI ID: $newamiid"
+echo "Wating for $newamiid to be \"available\""
+while [ `aws ec2 describe-images --image-ids $newamiid --query 'Images[].State' --output text` != "available" ]
+do
+  printf "."
+  sleep $waitint
+done
+echo ""
+echo "AMI $newamiid is \"available\""
+echo "Making AMI $newamiid public"
+aws ec2 modify-image-attribute --image-id $newamiid --launch-permission "Add=[{Group=all}]"
+aws ec2 describe-images --image-id $newamiid
